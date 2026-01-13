@@ -19,7 +19,7 @@ fastify.register(fastifyWs);
 const PORT = process.env.PORT || 3000;
 
 // ==================================================
-// 👇 HER ER JERES PROMPT (PÅ DANSK)
+// SYSTEM PROMPT (DANSK)
 // ==================================================
 const SYSTEM_MESSAGE = `
 Du er MyData Support.
@@ -40,15 +40,13 @@ så sig at du stiller videre til en medarbejder.
 `;
 
 // ==================================================
-// Basic routes
+// Health + root
 // ==================================================
 fastify.get("/", async () => {
   return { status: "MyData AI Voice (Realtime) running" };
 });
 
-fastify.get("/healthz", async () => {
-  return "ok";
-});
+fastify.get("/healthz", async () => "ok");
 
 // ==================================================
 // Twilio webhook (A call comes in)
@@ -71,20 +69,27 @@ fastify.register(async (fastify) => {
   fastify.get("/media-stream", { websocket: true }, (connection) => {
     console.log("📞 Twilio Media Stream connected");
 
+    let openaiReady = false;
+
     const openaiWs = new WebSocket(
-      "wss://api.openai.com/v1/realtime?model=gpt-realtime",
+      // ✅ BRUG DENNE MODEL
+      "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
       {
         headers: {
           Authorization: `Bearer ${OPENAI_API_KEY}`,
+          "OpenAI-Beta": "realtime=v1",
         },
       }
     );
 
+    // ==================================================
     // Når OpenAI er klar
+    // ==================================================
     openaiWs.on("open", () => {
       console.log("🤖 OpenAI Realtime connected");
+      openaiReady = true;
 
-      // Initialiser session (VIGTIG DEL)
+      // Session setup
       openaiWs.send(JSON.stringify({
         type: "session.update",
         session: {
@@ -108,30 +113,34 @@ fastify.register(async (fastify) => {
       openaiWs.send(JSON.stringify({
         type: "response.create",
         response: {
-          instructions: "Hej, du taler med MyData Support. Hvordan kan jeg hjælpe?",
+          instructions: "Hej, du taler med MyData Support. Hvordan kan jeg hjælpe?"
         }
       }));
     });
 
+    // ==================================================
     // OpenAI → Twilio (audio ud)
+    // ==================================================
     openaiWs.on("message", (data) => {
       const msg = JSON.parse(data.toString());
 
       if (msg.type === "response.output_audio.delta") {
         connection.send(JSON.stringify({
           event: "media",
-          media: {
-            payload: msg.delta
-          }
+          media: { payload: msg.delta }
         }));
       }
     });
 
+    // ==================================================
     // Twilio → OpenAI (audio ind)
+    // ==================================================
     connection.on("message", (message) => {
+      if (!openaiReady) return; // 🔑 KRITISK FIX
+
       const data = JSON.parse(message.toString());
 
-      if (data.event === "media") {
+      if (data.event === "media" && openaiWs.readyState === WebSocket.OPEN) {
         openaiWs.send(JSON.stringify({
           type: "input_audio_buffer.append",
           audio: data.media.payload
@@ -139,6 +148,9 @@ fastify.register(async (fastify) => {
       }
     });
 
+    // ==================================================
+    // Cleanup
+    // ==================================================
     connection.on("close", () => {
       console.log("📞 Twilio disconnected");
       if (openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
@@ -156,10 +168,4 @@ fastify.register(async (fastify) => {
 // ==================================================
 // Start server
 // ==================================================
-fastify.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
-  if (err) {
-    console.error(err);
-    process.exit(1);
-  }
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+fastify.listen({ port:
