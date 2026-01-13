@@ -48,7 +48,7 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
 // ==================================================
-// μ-law → PCM16 converter
+// μ-law → PCM16 converter (Twilio → OpenAI)
 // ==================================================
 function ulawToLinearSample(u_val) {
   u_val = ~u_val;
@@ -69,7 +69,7 @@ function ulawBufferToPCM16(buffer) {
 }
 
 // ==================================================
-// WebSocket bridge
+// WebSocket bridge: Twilio ↔ OpenAI Realtime
 // ==================================================
 wss.on("connection", (twilioWs, req) => {
   if (!req.url.includes("/ws/twilio")) return;
@@ -88,46 +88,68 @@ wss.on("connection", (twilioWs, req) => {
 
   let openaiReady = false;
 
+  // ==================================================
+  // OpenAI connected
+  // ==================================================
   openaiWs.on("open", () => {
     openaiReady = true;
     console.log("🤖 OpenAI Realtime connected");
 
-    // Instruer AI’en
-    openaiWs.send(
-      JSON.stringify({
-        type: "response.create",
-        response: {
-          modalities: ["audio"],
-          instructions: `
+    // 1️⃣ Definér hvem AI er (support-agent)
+    openaiWs.send(JSON.stringify({
+      type: "session.update",
+      session: {
+        instructions: `
 Du er MyData Support.
-Tal dansk, roligt og professionelt.
-Hjælp kunder med supportspørgsmål.
+
+Du tager imod telefonopkald fra kunder.
+Tal dansk.
+Tal roligt og professionelt.
 Stil ét spørgsmål ad gangen.
+
+Du hjælper med:
+- printerproblemer
+- computeropsætning
+- åbningstider
+- opsigelse af aftaler
+
+Hvis du ikke kan løse problemet,
+så sig at du stiller videre til en medarbejder.
 `,
-        },
-      })
-    );
+      },
+    }));
+
+    // 2️⃣ Få AI til at starte samtalen
+    openaiWs.send(JSON.stringify({
+      type: "response.create",
+      response: {
+        modalities: ["audio"],
+        instructions: "Sig hej og spørg hvordan du kan hjælpe.",
+      },
+    }));
   });
 
+  // ==================================================
   // OpenAI → Twilio (audio ud)
+  // ==================================================
   openaiWs.on("message", (msg) => {
     const data = JSON.parse(msg.toString());
 
     if (data.type === "response.audio.delta") {
       if (twilioWs.readyState === WebSocket.OPEN) {
-        twilioWs.send(
-          JSON.stringify({
-            event: "media",
-            media: {
-              payload: data.delta,
-            },
-          })
-        );
+        twilioWs.send(JSON.stringify({
+          event: "media",
+          media: {
+            payload: data.delta,
+          },
+        }));
       }
     }
   });
 
+  // ==================================================
   // Twilio → OpenAI (audio ind)
+  // ==================================================
   twilioWs.on("message", (msg) => {
     if (!openaiReady) return;
 
@@ -138,16 +160,25 @@ Stil ét spørgsmål ad gangen.
       const pcm16 = ulawBufferToPCM16(ulaw);
 
       if (openaiWs.readyState === WebSocket.OPEN) {
-        openaiWs.send(
-          JSON.stringify({
-            type: "input_audio_buffer.append",
-            audio: pcm16.toString("base64"),
-          })
-        );
+        openaiWs.send(JSON.stringify({
+          type: "input_audio_buffer.append",
+          audio: pcm16.toString("base64"),
+        }));
+
+        // 👉 Fortæl OpenAI at den må svare igen
+        openaiWs.send(JSON.stringify({
+          type: "response.create",
+          response: {
+            modalities: ["audio"],
+          },
+        }));
       }
     }
   });
 
+  // ==================================================
+  // Cleanup
+  // ==================================================
   twilioWs.on("close", () => {
     console.log("📞 Twilio closed");
     if (openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
