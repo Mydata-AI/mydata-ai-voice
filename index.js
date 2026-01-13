@@ -45,16 +45,42 @@ app.get("/healthz", (req, res) => {
 // ==================================================
 // GET /voice (BROWSER TEST)
 // ==================================================
-app.get("/voice", (req, res) => {
+app.post("/voice", (req, res) => {
+  // 👇 SIMULERET kunde-input (kun til test)
+  const simulatedUserText = "Min printer virker ikke";
+
+  console.log("SIMULATED USER TEXT:");
+  console.log(simulatedUserText);
+
+  // 👇 MEGET simpel trafik-betjent logik (uden AI)
+  let flow = "ESCALATE";
+
+  if (simulatedUserText.toLowerCase().includes("åben")) {
+    flow = "OPENING_HOURS";
+  } else if (simulatedUserText.toLowerCase().includes("opsig")) {
+    flow = "CANCELLATION";
+  } else if (simulatedUserText.toLowerCase().includes("printer")) {
+    flow = "PRINTER_SUPPORT";
+  } else if (
+    simulatedUserText.toLowerCase().includes("pc") ||
+    simulatedUserText.toLowerCase().includes("computer")
+  ) {
+    flow = "COMPUTER_SETUP";
+  }
+
+  console.log("TRAFFIC CONTROLLER RESULT:");
+  console.log(flow);
+
   res.type("text/xml");
   res.send(`
-<Response>
-  <Say voice="alice">
-    Hej. Dette er en browser test af MyData AI Voice.
-  </Say>
-</Response>
-`);
+    <Response>
+      <Say voice="alice">
+        Trafik-betjenten har valgt flowet: ${flow}
+      </Say>
+    </Response>
+  `);
 });
+
 
 // ==================================================
 // POST /voice (TWILIO CALL ENTRYPOINT)
