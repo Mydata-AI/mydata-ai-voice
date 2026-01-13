@@ -1,49 +1,22 @@
 import express from "express";
-import fs from "fs";
-import OpenAI from "openai";
+import http from "http";
+import { WebSocketServer, WebSocket } from "ws";
 
+// ==================================================
+// App + server
+// ==================================================
 const app = express();
 const port = process.env.PORT || 3000;
 
-// ==================================================
-// Middleware (VIGTIG for Twilio)
-// ==================================================
+// Twilio middleware
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
-
-// ==================================================
-// OpenAI client
-// ==================================================
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-// ==================================================
-// Load traffic controller prompt
-// ==================================================
-let trafficPrompt = "";
-
-try {
-  trafficPrompt = fs.readFileSync(
-    "./prompts/traffic-controller.txt",
-    "utf8"
-  );
-
-  console.log("================================");
-  console.log("🚦 TRAFFIC CONTROLLER LOADED");
-  console.log("================================");
-  console.log(trafficPrompt);
-  console.log("================================");
-} catch (err) {
-  console.error("❌ Could not load traffic-controller.txt");
-  console.error(err.message);
-}
 
 // ==================================================
 // Basic routes
 // ==================================================
 app.get("/", (req, res) => {
-  res.send("MyData AI Voice is running 🚀");
+  res.send("MyData AI Voice (Realtime) is running 🚀");
 });
 
 app.get("/healthz", (req, res) => {
@@ -51,79 +24,82 @@ app.get("/healthz", (req, res) => {
 });
 
 // ==================================================
-// POST /voice  (TEST + TWILIO ENTRYPOINT)
+// POST /voice  (Twilio entrypoint)
+// Starter Media Stream – ingen AI her
 // ==================================================
-app.post("/voice", async (req, res) => {
-  try {
-    // 🔹 1. User input
-    // Twilio: req.body.SpeechResult
-    // Test fallback:
-    const userText =
-      req.body.SpeechResult || "Min printer virker ikke";
-
-    console.log("USER TEXT:");
-    console.log(userText);
-
-    // 🔹 2. Call OpenAI traffic controller
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      temperature: 0,
-      messages: [
-        {
-          role: "system",
-          content: trafficPrompt,
-        },
-        {
-          role: "user",
-          content: userText,
-        },
-      ],
-    });
-
-    const aiReply = completion.choices[0].message.content;
-
-    console.log("AI RAW OUTPUT:");
-    console.log(aiReply);
-
-    // 🔹 3. Simple parse (V1)
-    let flow = "ESCALATE";
-
-    if (aiReply.includes("OPENING_HOURS")) flow = "OPENING_HOURS";
-    else if (aiReply.includes("CANCELLATION")) flow = "CANCELLATION";
-    else if (aiReply.includes("COMPUTER_SETUP")) flow = "COMPUTER_SETUP";
-    else if (aiReply.includes("PRINTER_SUPPORT")) flow = "PRINTER_SUPPORT";
-
-    console.log("FINAL FLOW:", flow);
-
-    // 🔹 4. Respond to Twilio
-    res.type("text/xml");
-    res.send(`
+app.post("/voice", (req, res) => {
+  res.type("text/xml");
+  res.send(`
 <Response>
-  <Say voice="alice">
-    Tak. Jeg har registreret din henvendelse.
-    Flowet er: ${flow}.
-  </Say>
+  <Start>
+    <Stream url="wss://mydata-ai-realtime-poc.onrender.com/ws/twilio" />
+  </Start>
+  <Say>Du bliver nu forbundet.</Say>
 </Response>
 `);
-  } catch (err) {
-    console.error("❌ ERROR in /voice");
-    console.error(err.message);
-
-    res.type("text/xml");
-    res.send(`
-<Response>
-  <Say voice="alice">
-    Der opstod en teknisk fejl. Du bliver stillet videre.
-  </Say>
-</Response>
-`);
-  }
 });
 
 // ==================================================
-// START SERVER (ALTID SIDST)
+// HTTP server (krævet for WebSocket)
 // ==================================================
-app.listen(port, () => {
+const server = http.createServer(app);
+
+// ==================================================
+// WebSocket: Twilio ↔ ChatGPT Realtime Audio
+// ==================================================
+const wss = new WebSocketServer({ server });
+
+wss.on("connection", (twilioWs, req) => {
+  if (!req.url.includes("/ws/twilio")) return;
+
+  console.log("📞 Twilio Media Stream connected");
+
+  const openaiWs = new WebSocket(
+    "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
+    {
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "OpenAI-Beta": "realtime=v1",
+      },
+    }
+  );
+
+  openaiWs.on("open", () => {
+    console.log("🤖 OpenAI Realtime connected");
+  });
+
+  openaiWs.on("message", (msg) => {
+    // OpenAI → Twilio (audio tilbage)
+    if (twilioWs.readyState === WebSocket.OPEN) {
+      twilioWs.send(msg);
+    }
+  });
+
+  twilioWs.on("message", (msg) => {
+    // Twilio → OpenAI (audio ind)
+    if (openaiWs.readyState === WebSocket.OPEN) {
+      openaiWs.send(msg);
+    }
+  });
+
+  twilioWs.on("close", () => {
+    console.log("📞 Twilio stream closed");
+    openaiWs.close();
+  });
+
+  openaiWs.on("close", () => {
+    console.log("🤖 OpenAI realtime closed");
+    twilioWs.close();
+  });
+
+  twilioWs.on("error", console.error);
+  openaiWs.on("error", console.error);
+});
+
+// ==================================================
+// START SERVER
+// ==================================================
+server.listen(port, () => {
   console.log("================================");
   console.log(`🚀 Server running on port ${port}`);
   console.log("================================");
