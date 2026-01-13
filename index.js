@@ -72,7 +72,6 @@ fastify.register(async (fastify) => {
     let openaiReady = false;
 
     const openaiWs = new WebSocket(
-      // ✅ BRUG DENNE MODEL
       "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
       {
         headers: {
@@ -89,7 +88,7 @@ fastify.register(async (fastify) => {
       console.log("🤖 OpenAI Realtime connected");
       openaiReady = true;
 
-      // Session setup
+      // 1️⃣ Initialisér session
       openaiWs.send(JSON.stringify({
         type: "session.update",
         session: {
@@ -109,11 +108,26 @@ fastify.register(async (fastify) => {
         }
       }));
 
-      // AI starter samtalen
+      // 2️⃣ Opret første samtale-item (DETTE MANGLEDE FØR)
+      openaiWs.send(JSON.stringify({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "assistant",
+          content: [
+            {
+              type: "output_text",
+              text: "Hej, du taler med MyData Support. Hvordan kan jeg hjælpe?"
+            }
+          ]
+        }
+      }));
+
+      // 3️⃣ Bed OpenAI om at svare MED AUDIO
       openaiWs.send(JSON.stringify({
         type: "response.create",
         response: {
-          instructions: "Hej, du taler med MyData Support. Hvordan kan jeg hjælpe?"
+          modalities: ["audio"]
         }
       }));
     });
@@ -136,7 +150,7 @@ fastify.register(async (fastify) => {
     // Twilio → OpenAI (audio ind)
     // ==================================================
     connection.on("message", (message) => {
-      if (!openaiReady) return; // 🔑 KRITISK FIX
+      if (!openaiReady) return;
 
       const data = JSON.parse(message.toString());
 
