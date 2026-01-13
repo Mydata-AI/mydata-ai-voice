@@ -8,15 +8,14 @@ import { WebSocketServer, WebSocket } from "ws";
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Twilio middleware
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
 // ==================================================
-// Basic routes
+// Routes
 // ==================================================
 app.get("/", (req, res) => {
-  res.send("MyData AI Voice (Realtime) is running 🚀");
+  res.send("MyData AI Voice (Realtime) running");
 });
 
 app.get("/healthz", (req, res) => {
@@ -24,8 +23,7 @@ app.get("/healthz", (req, res) => {
 });
 
 // ==================================================
-// POST /voice  (Twilio entrypoint)
-// Starter Media Stream – ingen AI her
+// Twilio voice webhook
 // ==================================================
 app.post("/voice", (req, res) => {
   res.type("text/xml");
@@ -34,21 +32,41 @@ app.post("/voice", (req, res) => {
   <Start>
     <Stream url="wss://mydata-ai-realtime-poc.onrender.com/ws/twilio" />
   </Start>
-  <Say>Du bliver nu forbundet.</Say>
+  <Say>Du er nu forbundet.</Say>
 </Response>
 `);
 });
 
 // ==================================================
-// HTTP server (krævet for WebSocket)
+// HTTP + WebSocket
 // ==================================================
 const server = http.createServer(app);
-
-// ==================================================
-// WebSocket: Twilio ↔ ChatGPT Realtime Audio
-// ==================================================
 const wss = new WebSocketServer({ server });
 
+// ==================================================
+// μ-law → PCM16 converter (8kHz)
+// ==================================================
+function ulawToLinearSample(u_val) {
+  u_val = ~u_val;
+  const sign = u_val & 0x80;
+  const exponent = (u_val >> 4) & 0x07;
+  const mantissa = u_val & 0x0f;
+  let sample = ((mantissa << 3) + 0x84) << exponent;
+  return sign ? (0x84 - sample) : (sample - 0x84);
+}
+
+function ulawBufferToPCM16(buffer) {
+  const pcm = Buffer.alloc(buffer.length * 2);
+  for (let i = 0; i < buffer.length; i++) {
+    const sample = ulawToLinearSample(buffer[i]);
+    pcm.writeInt16LE(sample, i * 2);
+  }
+  return pcm;
+}
+
+// ==================================================
+// WebSocket bridge
+// ==================================================
 wss.on("connection", (twilioWs, req) => {
   if (!req.url.includes("/ws/twilio")) return;
 
@@ -58,7 +76,7 @@ wss.on("connection", (twilioWs, req) => {
     "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
     {
       headers: {
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         "OpenAI-Beta": "realtime=v1",
       },
     }
@@ -66,29 +84,59 @@ wss.on("connection", (twilioWs, req) => {
 
   openaiWs.on("open", () => {
     console.log("🤖 OpenAI Realtime connected");
+
+    // Tell OpenAI to speak
+    openaiWs.send(
+      JSON.stringify({
+        type: "response.create",
+        response: {
+          modalities: ["audio"],
+          instructions: "Svar venligt og kort på dansk.",
+        },
+      })
+    );
   });
 
+  // OpenAI → Twilio (audio out)
   openaiWs.on("message", (msg) => {
-    // OpenAI → Twilio (audio tilbage)
-    if (twilioWs.readyState === WebSocket.OPEN) {
-      twilioWs.send(msg);
+    const data = JSON.parse(msg.toString());
+
+    if (data.type === "response.audio.delta") {
+      twilioWs.send(
+        JSON.stringify({
+          event: "media",
+          media: {
+            payload: data.delta,
+          },
+        })
+      );
     }
   });
 
+  // Twilio → OpenAI (audio in)
   twilioWs.on("message", (msg) => {
-    // Twilio → OpenAI (audio ind)
-    if (openaiWs.readyState === WebSocket.OPEN) {
-      openaiWs.send(msg);
+    const data = JSON.parse(msg.toString());
+
+    if (data.event === "media") {
+      const ulaw = Buffer.from(data.media.payload, "base64");
+      const pcm16 = ulawBufferToPCM16(ulaw);
+
+      openaiWs.send(
+        JSON.stringify({
+          type: "input_audio_buffer.append",
+          audio: pcm16.toString("base64"),
+        })
+      );
     }
   });
 
   twilioWs.on("close", () => {
-    console.log("📞 Twilio stream closed");
+    console.log("📞 Twilio closed");
     openaiWs.close();
   });
 
   openaiWs.on("close", () => {
-    console.log("🤖 OpenAI realtime closed");
+    console.log("🤖 OpenAI closed");
     twilioWs.close();
   });
 
@@ -97,10 +145,8 @@ wss.on("connection", (twilioWs, req) => {
 });
 
 // ==================================================
-// START SERVER
+// Start server
 // ==================================================
 server.listen(port, () => {
-  console.log("================================");
   console.log(`🚀 Server running on port ${port}`);
-  console.log("================================");
 });
