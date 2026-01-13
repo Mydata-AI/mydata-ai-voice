@@ -1,14 +1,22 @@
 import express from "express";
 import fs from "fs";
+import OpenAI from "openai";
 
 const app = express();
 const port = process.env.PORT || 3000;
 
 // ==================================================
-// Middleware (VIGTIG for Twilio POST)
+// Middleware (VIGTIG for Twilio)
 // ==================================================
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
+
+// ==================================================
+// OpenAI client
+// ==================================================
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 // ==================================================
 // Load traffic controller prompt
@@ -43,61 +51,73 @@ app.get("/healthz", (req, res) => {
 });
 
 // ==================================================
-// GET /voice (BROWSER TEST)
+// POST /voice  (TEST + TWILIO ENTRYPOINT)
 // ==================================================
-app.post("/voice", (req, res) => {
-  // 👇 SIMULERET kunde-input (kun til test)
-  const simulatedUserText = "Min printer virker ikke";
+app.post("/voice", async (req, res) => {
+  try {
+    // 🔹 1. User input
+    // Twilio: req.body.SpeechResult
+    // Test fallback:
+    const userText =
+      req.body.SpeechResult || "Min printer virker ikke";
 
-  console.log("SIMULATED USER TEXT:");
-  console.log(simulatedUserText);
+    console.log("USER TEXT:");
+    console.log(userText);
 
-  // 👇 MEGET simpel trafik-betjent logik (uden AI)
-  let flow = "ESCALATE";
+    // 🔹 2. Call OpenAI traffic controller
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0,
+      messages: [
+        {
+          role: "system",
+          content: trafficPrompt,
+        },
+        {
+          role: "user",
+          content: userText,
+        },
+      ],
+    });
 
-  if (simulatedUserText.toLowerCase().includes("åben")) {
-    flow = "OPENING_HOURS";
-  } else if (simulatedUserText.toLowerCase().includes("opsig")) {
-    flow = "CANCELLATION";
-  } else if (simulatedUserText.toLowerCase().includes("printer")) {
-    flow = "PRINTER_SUPPORT";
-  } else if (
-    simulatedUserText.toLowerCase().includes("pc") ||
-    simulatedUserText.toLowerCase().includes("computer")
-  ) {
-    flow = "COMPUTER_SETUP";
-  }
+    const aiReply = completion.choices[0].message.content;
 
-  console.log("TRAFFIC CONTROLLER RESULT:");
-  console.log(flow);
+    console.log("AI RAW OUTPUT:");
+    console.log(aiReply);
 
-  res.type("text/xml");
-  res.send(`
-    <Response>
-      <Say voice="alice">
-        Trafik-betjenten har valgt flowet: ${flow}
-      </Say>
-    </Response>
-  `);
-});
+    // 🔹 3. Simple parse (V1)
+    let flow = "ESCALATE";
 
+    if (aiReply.includes("OPENING_HOURS")) flow = "OPENING_HOURS";
+    else if (aiReply.includes("CANCELLATION")) flow = "CANCELLATION";
+    else if (aiReply.includes("COMPUTER_SETUP")) flow = "COMPUTER_SETUP";
+    else if (aiReply.includes("PRINTER_SUPPORT")) flow = "PRINTER_SUPPORT";
 
-// ==================================================
-// POST /voice (TWILIO CALL ENTRYPOINT)
-// ==================================================
-app.post("/voice", (req, res) => {
-  console.log("📞 Incoming call from Twilio");
-  console.log("From:", req.body.From);
+    console.log("FINAL FLOW:", flow);
 
-  res.type("text/xml");
-  res.send(`
+    // 🔹 4. Respond to Twilio
+    res.type("text/xml");
+    res.send(`
 <Response>
   <Say voice="alice">
-    Hej, MyData AI Voice kører nu.
-    Hvordan kan jeg hjælpe dig?
+    Tak. Jeg har registreret din henvendelse.
+    Flowet er: ${flow}.
   </Say>
 </Response>
 `);
+  } catch (err) {
+    console.error("❌ ERROR in /voice");
+    console.error(err.message);
+
+    res.type("text/xml");
+    res.send(`
+<Response>
+  <Say voice="alice">
+    Der opstod en teknisk fejl. Du bliver stillet videre.
+  </Say>
+</Response>
+`);
+  }
 });
 
 // ==================================================
