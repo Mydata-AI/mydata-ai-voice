@@ -32,7 +32,11 @@ app.post("/voice", (req, res) => {
   <Start>
     <Stream url="wss://mydata-ai-realtime-poc.onrender.com/ws/twilio" />
   </Start>
+
   <Say>Du er nu forbundet.</Say>
+
+  <!-- Holder opkaldet åbent -->
+  <Pause length="600" />
 </Response>
 `);
 });
@@ -44,7 +48,7 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
 // ==================================================
-// μ-law → PCM16 converter (8kHz)
+// μ-law → PCM16 converter
 // ==================================================
 function ulawToLinearSample(u_val) {
   u_val = ~u_val;
@@ -82,62 +86,76 @@ wss.on("connection", (twilioWs, req) => {
     }
   );
 
+  let openaiReady = false;
+
   openaiWs.on("open", () => {
+    openaiReady = true;
     console.log("🤖 OpenAI Realtime connected");
 
-    // Tell OpenAI to speak
+    // Instruer AI’en
     openaiWs.send(
       JSON.stringify({
         type: "response.create",
         response: {
           modalities: ["audio"],
-          instructions: "Svar venligt og kort på dansk.",
+          instructions: `
+Du er MyData Support.
+Tal dansk, roligt og professionelt.
+Hjælp kunder med supportspørgsmål.
+Stil ét spørgsmål ad gangen.
+`,
         },
       })
     );
   });
 
-  // OpenAI → Twilio (audio out)
+  // OpenAI → Twilio (audio ud)
   openaiWs.on("message", (msg) => {
     const data = JSON.parse(msg.toString());
 
     if (data.type === "response.audio.delta") {
-      twilioWs.send(
-        JSON.stringify({
-          event: "media",
-          media: {
-            payload: data.delta,
-          },
-        })
-      );
+      if (twilioWs.readyState === WebSocket.OPEN) {
+        twilioWs.send(
+          JSON.stringify({
+            event: "media",
+            media: {
+              payload: data.delta,
+            },
+          })
+        );
+      }
     }
   });
 
-  // Twilio → OpenAI (audio in)
+  // Twilio → OpenAI (audio ind)
   twilioWs.on("message", (msg) => {
+    if (!openaiReady) return;
+
     const data = JSON.parse(msg.toString());
 
     if (data.event === "media") {
       const ulaw = Buffer.from(data.media.payload, "base64");
       const pcm16 = ulawBufferToPCM16(ulaw);
 
-      openaiWs.send(
-        JSON.stringify({
-          type: "input_audio_buffer.append",
-          audio: pcm16.toString("base64"),
-        })
-      );
+      if (openaiWs.readyState === WebSocket.OPEN) {
+        openaiWs.send(
+          JSON.stringify({
+            type: "input_audio_buffer.append",
+            audio: pcm16.toString("base64"),
+          })
+        );
+      }
     }
   });
 
   twilioWs.on("close", () => {
     console.log("📞 Twilio closed");
-    openaiWs.close();
+    if (openaiWs.readyState === WebSocket.OPEN) openaiWs.close();
   });
 
   openaiWs.on("close", () => {
     console.log("🤖 OpenAI closed");
-    twilioWs.close();
+    if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close();
   });
 
   twilioWs.on("error", console.error);
