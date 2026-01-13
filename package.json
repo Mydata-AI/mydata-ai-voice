@@ -1,15 +1,12 @@
 {
-  "name": "speech-assistant-openai-realtime-api-node",
-  "version": "1.0.1",
-  "description": "",
+  "name": "mydata-ai-voice",
+  "version": "1.0.0",
+  "description": "MyData AI Voice Support using Twilio + OpenAI Realtime",
   "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
   "dependencies": {
     "@fastify/formbody": "^8.0.0",
     "@fastify/websocket": "^11.0.0",
