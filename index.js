@@ -35,7 +35,6 @@ app.post("/voice", (req, res) => {
 
   <Say>Du er nu forbundet.</Say>
 
-  <!-- Holder opkaldet åbent -->
   <Pause length="600" />
 </Response>
 `);
@@ -48,7 +47,7 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
 // ==================================================
-// μ-law → PCM16 converter (Twilio → OpenAI)
+// μ-law → PCM16 (Twilio → OpenAI)
 // ==================================================
 function ulawToLinearSample(u_val) {
   u_val = ~u_val;
@@ -66,6 +65,35 @@ function ulawBufferToPCM16(buffer) {
     pcm.writeInt16LE(sample, i * 2);
   }
   return pcm;
+}
+
+// ==================================================
+// PCM16 → μ-law (OpenAI → Twilio)  🔴 MANGLENDE DEL
+// ==================================================
+function pcm16ToUlawSample(sample) {
+  const BIAS = 0x84;
+  let sign = (sample >> 8) & 0x80;
+  if (sign) sample = -sample;
+  if (sample > 32635) sample = 32635;
+
+  sample += BIAS;
+
+  let exponent = 7;
+  for (let expMask = 0x4000; (sample & expMask) === 0 && exponent > 0; expMask >>= 1) {
+    exponent--;
+  }
+
+  const mantissa = (sample >> (exponent + 3)) & 0x0f;
+  return ~(sign | (exponent << 4) | mantissa);
+}
+
+function pcm16BufferToUlaw(buffer) {
+  const ulaw = Buffer.alloc(buffer.length / 2);
+  for (let i = 0; i < ulaw.length; i++) {
+    const sample = buffer.readInt16LE(i * 2);
+    ulaw[i] = pcm16ToUlawSample(sample);
+  }
+  return ulaw;
 }
 
 // ==================================================
@@ -95,7 +123,7 @@ wss.on("connection", (twilioWs, req) => {
     openaiReady = true;
     console.log("🤖 OpenAI Realtime connected");
 
-    // 1️⃣ Definér hvem AI er (support-agent)
+    // Definér support-agent
     openaiWs.send(JSON.stringify({
       type: "session.update",
       session: {
@@ -119,28 +147,31 @@ så sig at du stiller videre til en medarbejder.
       },
     }));
 
-    // 2️⃣ Få AI til at starte samtalen
+    // AI starter samtalen
     openaiWs.send(JSON.stringify({
       type: "response.create",
       response: {
         modalities: ["audio"],
-        instructions: "Sig hej og spørg hvordan du kan hjælpe.",
+        instructions: "Hej, du taler med MyData Support. Hvordan kan jeg hjælpe?",
       },
     }));
   });
 
   // ==================================================
-  // OpenAI → Twilio (audio ud)
+  // OpenAI → Twilio (audio ud) ✅ FIXET
   // ==================================================
   openaiWs.on("message", (msg) => {
     const data = JSON.parse(msg.toString());
 
     if (data.type === "response.audio.delta") {
+      const pcm = Buffer.from(data.delta, "base64");
+      const ulaw = pcm16BufferToUlaw(pcm);
+
       if (twilioWs.readyState === WebSocket.OPEN) {
         twilioWs.send(JSON.stringify({
           event: "media",
           media: {
-            payload: data.delta,
+            payload: ulaw.toString("base64"),
           },
         }));
       }
@@ -165,7 +196,7 @@ så sig at du stiller videre til en medarbejder.
           audio: pcm16.toString("base64"),
         }));
 
-        // 👉 Fortæl OpenAI at den må svare igen
+        // Bed AI om at svare igen
         openaiWs.send(JSON.stringify({
           type: "response.create",
           response: {
